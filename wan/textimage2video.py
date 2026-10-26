@@ -115,6 +115,26 @@ class WanTI2V:
 
         self.sample_neg_prompt = config.sample_neg_prompt
 
+    def _decode_vae_with_cpu_fallback(self, latents):
+        try:
+            return self.vae.decode(latents)
+        except torch.cuda.OutOfMemoryError:
+            logging.warning(
+                "CUDA out of memory while decoding VAE; retrying VAE decode on CPU."
+            )
+
+        self.vae.model.clear_cache()
+        self.vae.model.cpu()
+        self.vae.scale = [
+            value.cpu() if isinstance(value, torch.Tensor) else value
+            for value in self.vae.scale
+        ]
+        self.vae.device = torch.device("cpu")
+        latents = [latent.detach().cpu() for latent in latents]
+        gc.collect()
+        torch.cuda.empty_cache()
+        return self.vae.decode(latents)
+
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype):
         """
@@ -398,7 +418,7 @@ class WanTI2V:
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
             if self.rank == 0:
-                videos = self.vae.decode(x0)
+                videos = self._decode_vae_with_cpu_fallback(x0)
 
         del noise, latents
         del sample_scheduler
@@ -606,7 +626,7 @@ class WanTI2V:
                 torch.cuda.empty_cache()
 
             if self.rank == 0:
-                videos = self.vae.decode(x0)
+                videos = self._decode_vae_with_cpu_fallback(x0)
 
         del noise, latent, x0
         del sample_scheduler
